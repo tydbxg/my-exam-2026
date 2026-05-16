@@ -27,9 +27,18 @@
             cursor: pointer;
         }
 
+        input, textarea {
+            padding: 7px;
+        }
+
         input {
             width: 280px;
-            padding: 7px;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 110px;
+            font-family: Consolas, monospace;
         }
 
         table {
@@ -92,6 +101,18 @@
     <input id="keyword" type="text" placeholder="按学生ID/课程ID/课程名称/课程类型检索">
     <button type="button" onclick="searchRecords()">检索</button>
     <span id="searchMessage" class="message"></span>
+</div>
+
+<h2>CSV 数据批量导入</h2>
+<p>每行一条数据，格式：学生ID,课程ID,课程名称,课程类型。支持单次500条以上数据，后端使用线程池异步分批处理。</p>
+<textarea id="csvText">S000003,C000002,数据库原理,专业课
+S000001,C000001,Java程序设计,专业课
+S000002,C000003,计算机网络,公共课
+S000001,C000001,Java程序设计,专业课
+S000001,C000004,音乐鉴赏,选修课</textarea>
+<div class="actions">
+    <button type="button" onclick="importCsvRecords()">导入并处理</button>
+    <span id="importMessage" class="message"></span>
 </div>
 
 <h2 id="tableTitle">选课列表</h2>
@@ -162,8 +183,51 @@
         setStatus('检索完成');
     }
 
-    async function fetchJson(url) {
-        const response = await fetch(url);
+    async function importCsvRecords() {
+        const csvText = document.getElementById('csvText').value.trim();
+        if (!csvText) {
+            document.getElementById('importMessage').textContent = '请输入CSV数据';
+            return;
+        }
+
+        setStatus('正在提交CSV批量导入任务...');
+        clearSearchMessage();
+        document.getElementById('importMessage').textContent = '';
+        const submitResult = await fetchJson('/api/question1/enrollments/import/async', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ csvText })
+        });
+
+        document.getElementById('importMessage').textContent = submitResult.message + '，任务ID：' + submitResult.taskId;
+        pollImportTask(submitResult.taskId);
+    }
+
+    async function pollImportTask(taskId) {
+        const task = await fetchJson('/api/question1/enrollments/import/tasks/' + encodeURIComponent(taskId));
+        document.getElementById('importMessage').textContent = `${task.message}，进度：${task.processedCount}/${task.totalCount}`;
+
+        if (task.status === 'COMPLETED') {
+            const result = task.result;
+            renderSummary(result.inputCount, result.removedCount, result.outputCount);
+            renderRecords(result.records, 'CSV异步批量导入结果（已去重、排序）', false);
+            renderFormattedLines(result.formattedLines);
+            setStatus('CSV异步批量导入完成');
+            return;
+        }
+
+        if (task.status === 'FAILED' || task.status === 'NOT_FOUND') {
+            setStatus(task.message);
+            return;
+        }
+
+        setTimeout(() => pollImportTask(taskId), 800);
+    }
+
+    async function fetchJson(url, options) {
+        const response = await fetch(url, options);
         if (!response.ok) {
             throw new Error('请求失败：' + response.status);
         }
