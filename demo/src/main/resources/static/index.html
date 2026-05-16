@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>学生选课处理工具</title>
+    <style>
+        body {
+            max-width: 1100px;
+            margin: 24px auto;
+            padding: 0 16px;
+            font-family: Arial, "Microsoft YaHei", sans-serif;
+            color: #222;
+        }
+
+        h1, h2, h3 {
+            margin: 16px 0 10px;
+        }
+
+        .actions, .summary, .search {
+            margin: 12px 0;
+        }
+
+        button {
+            margin-right: 8px;
+            padding: 7px 14px;
+            cursor: pointer;
+        }
+
+        input {
+            width: 280px;
+            padding: 7px;
+        }
+
+        table {
+            width: 100%;
+            margin-top: 8px;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 8px;
+            border: 1px solid #ddd;
+            text-align: left;
+        }
+
+        th {
+            background: #f5f5f5;
+        }
+
+        .duplicate {
+            background: #fff2cc;
+        }
+
+        .message {
+            margin-left: 8px;
+            color: #666;
+        }
+
+        .category {
+            margin-top: 16px;
+            padding: 12px;
+            border: 1px solid #ddd;
+        }
+
+        pre {
+            padding: 12px;
+            background: #f7f7f7;
+            border: 1px solid #ddd;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+<h1>学生选课基础处理工具</h1>
+<p>功能：展示原始重复数据，点击按钮后完成去重、排序、输出，并可按课程类型分类展示。</p>
+
+<div class="actions">
+    <button type="button" onclick="loadRawRecords()">查看原始数据</button>
+    <button type="button" onclick="processRecords()">去重排序输出</button>
+    <button type="button" onclick="loadCategories()">按课程类型分类</button>
+    <span id="status" class="message">准备就绪</span>
+</div>
+
+<div class="summary">
+    输入记录数：<strong id="inputCount">-</strong>，
+    移除重复数：<strong id="removedCount">-</strong>，
+    输出记录数：<strong id="outputCount">-</strong>
+</div>
+
+<div class="search">
+    <input id="keyword" type="text" placeholder="按学生ID/课程ID/课程名称/课程类型检索">
+    <button type="button" onclick="searchRecords()">检索</button>
+    <span id="searchMessage" class="message"></span>
+</div>
+
+<h2 id="tableTitle">选课列表</h2>
+<table>
+    <thead>
+    <tr>
+        <th>序号</th>
+        <th>学生ID</th>
+        <th>课程ID</th>
+        <th>课程名称</th>
+        <th>课程类型</th>
+        <th>格式化输出</th>
+    </tr>
+    </thead>
+    <tbody id="recordsBody"></tbody>
+</table>
+
+<h2>格式化输出</h2>
+<pre id="formattedLines">点击“去重排序输出”后显示。</pre>
+
+<h2>课程类型分类</h2>
+<div id="categories">点击“按课程类型分类”后显示。</div>
+
+<script>
+    window.addEventListener('DOMContentLoaded', loadRawRecords);
+
+    async function loadRawRecords() {
+        setStatus('正在加载原始数据...');
+        clearSearchMessage();
+        const records = await fetchJson('/api/question1/enrollments/raw');
+        renderSummary(records.length, 0, records.length);
+        renderRecords(records, '原始选课列表（含重复数据）', true);
+        renderFormattedLines([]);
+        setStatus('原始数据加载完成');
+    }
+
+    async function processRecords() {
+        setStatus('正在处理数据...');
+        clearSearchMessage();
+        const result = await fetchJson('/api/question1/enrollments/process');
+        renderSummary(result.inputCount, result.removedCount, result.outputCount);
+        renderRecords(result.records, '处理后的选课列表（已去重、排序）', false);
+        renderFormattedLines(result.formattedLines);
+        setStatus('处理完成');
+    }
+
+    async function loadCategories() {
+        setStatus('正在加载分类数据...');
+        clearSearchMessage();
+        const result = await fetchJson('/api/question1/enrollments/categories');
+        renderCategories(result.categories || {});
+        setStatus('分类数据加载完成');
+    }
+
+    async function searchRecords() {
+        const keyword = document.getElementById('keyword').value.trim();
+        if (!keyword) {
+            document.getElementById('searchMessage').textContent = '请输入检索关键词';
+            return;
+        }
+
+        setStatus('正在检索...');
+        const result = await fetchJson('/api/question1/enrollments/search?keyword=' + encodeURIComponent(keyword));
+        document.getElementById('searchMessage').textContent = result.message;
+        renderRecords(result.records || [], '检索结果', false);
+        renderSummary('-', '-', result.records ? result.records.length : 0);
+        renderFormattedLines((result.records || []).map(formatRecord));
+        setStatus('检索完成');
+    }
+
+    async function fetchJson(url) {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error('请求失败：' + response.status);
+        }
+        return response.json();
+    }
+
+    function renderSummary(inputCount, removedCount, outputCount) {
+        document.getElementById('inputCount').textContent = inputCount;
+        document.getElementById('removedCount').textContent = removedCount;
+        document.getElementById('outputCount').textContent = outputCount;
+    }
+
+    function renderRecords(records, title, markDuplicates) {
+        document.getElementById('tableTitle').textContent = title;
+        const seen = new Set();
+        const body = document.getElementById('recordsBody');
+
+        if (!records || records.length === 0) {
+            body.innerHTML = '<tr><td colspan="6">暂无数据</td></tr>';
+            return;
+        }
+
+        body.innerHTML = records.map((record, index) => {
+            const key = record.studentId + '#' + record.courseId;
+            const duplicate = markDuplicates && seen.has(key);
+            seen.add(key);
+            return `
+                <tr class="${duplicate ? 'duplicate' : ''}">
+                    <td>${index + 1}</td>
+                    <td>${escapeHtml(record.studentId)}</td>
+                    <td>${escapeHtml(record.courseId)}</td>
+                    <td>${escapeHtml(record.courseName)}</td>
+                    <td>${escapeHtml(record.courseType || '')}</td>
+                    <td>${escapeHtml(formatRecord(record))}${duplicate ? '（重复）' : ''}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function renderFormattedLines(lines) {
+        document.getElementById('formattedLines').textContent = lines && lines.length > 0
+            ? lines.join('\n')
+            : '暂无格式化输出';
+    }
+
+    function renderCategories(categories) {
+        const container = document.getElementById('categories');
+        const types = ['公共课', '专业课', '选修课'];
+        container.innerHTML = types.map(type => {
+            const records = categories[type] || [];
+            return `
+                <section class="category">
+                    <h3>${type}（${records.length}条）</h3>
+                    ${renderCategoryTable(records)}
+                </section>
+            `;
+        }).join('');
+    }
+
+    function renderCategoryTable(records) {
+        if (!records || records.length === 0) {
+            return '<p>暂无数据</p>';
+        }
+        const rows = records.map((record, index) => `
+            <tr>
+                <td>${index + 1}</td>
+                <td>${escapeHtml(record.studentId)}</td>
+                <td>${escapeHtml(record.courseId)}</td>
+                <td>${escapeHtml(record.courseName)}</td>
+                <td>${escapeHtml(record.courseType || '')}</td>
+            </tr>
+        `).join('');
+
+        return `
+            <table>
+                <thead>
+                <tr>
+                    <th>序号</th>
+                    <th>学生ID</th>
+                    <th>课程ID</th>
+                    <th>课程名称</th>
+                    <th>课程类型</th>
+                </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    }
+
+    function formatRecord(record) {
+        return `学生ID：${record.studentId}，课程ID：${record.courseId}，课程名称：${record.courseName}`;
+    }
+
+    function setStatus(message) {
+        document.getElementById('status').textContent = message;
+    }
+
+    function clearSearchMessage() {
+        document.getElementById('searchMessage').textContent = '';
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#039;');
+    }
+</script>
+</body>
+</html>
